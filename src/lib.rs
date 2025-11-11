@@ -143,7 +143,8 @@ pub extern crate core as _core;
 pub mod mock_hal;
 
 use core::cell::RefCell;
-use embedded_hal::digital::v2::{InputPin, OutputPin};
+use _core::convert::Infallible;
+use embedded_hal::digital::{ErrorType, InputPin, OutputPin};
 
 /// A virtual `embedded-hal` input pin representing one key of the keypad.
 ///
@@ -163,32 +164,36 @@ use embedded_hal::digital::v2::{InputPin, OutputPin};
 ///
 /// 2) Reading from a `KeypadInput` is slower than reading from a real input
 /// pin, because it needs to change the output pin state twice for every read.
-pub struct KeypadInput<'a, E> {
-    row: &'a dyn InputPin<Error = E>,
+
+
+pub struct KeypadInput<'a, E: embedded_hal::digital::Error> {
+    row: &'a RefCell<dyn InputPin<Error = E>>,
     col: &'a RefCell<dyn OutputPin<Error = E>>,
 }
 
-impl<'a, E> KeypadInput<'a, E> {
+impl<'a, E: embedded_hal::digital::Error> KeypadInput<'a, E> {
     /// Create a new `KeypadInput`. For use in macros.
     pub fn new(
-        row: &'a dyn InputPin<Error = E>,
+        row: &'a RefCell<dyn InputPin<Error = E>>,
         col: &'a RefCell<dyn OutputPin<Error = E>>,
     ) -> Self {
         Self { row, col }
     }
 }
-
-impl<'a, E> InputPin for KeypadInput<'a, E> {
+impl<'a, E: embedded_hal::digital::Error> ErrorType for KeypadInput<'a, E> {
     type Error = E;
+}
+
+impl<'a, E: embedded_hal::digital::Error> InputPin for KeypadInput<'a, E> {
     /// Read the state of the key at this row and column. Not reentrant.
-    fn is_high(&self) -> Result<bool, E> {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
         Ok(!self.is_low()?)
     }
 
     /// Read the state of the key at this row and column. Not reentrant.
-    fn is_low(&self) -> Result<bool, E> {
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
         self.col.borrow_mut().set_low()?;
-        let out = self.row.is_low()?;
+        let out = self.row.borrow_mut().is_low()?;
         self.col.borrow_mut().set_high()?;
         Ok(out)
     }
@@ -320,7 +325,7 @@ macro_rules! keypad_struct {
     ) => {
         $(#[$attributes])* $visibility struct $struct_name {
             /// The input pins used for reading each row.
-            rows: ($($row_type),* ,),
+            rows: ($($crate::_core::cell::RefCell<$row_type>),* ,),
             /// The output pins used for scanning through each column. They're
             /// wrapped in RefCells so that we can change their state even if we
             /// only have shared/immutable reference to them. This lets us
@@ -382,7 +387,7 @@ macro_rules! keypad_struct {
                 rows: ($($row_type),* ,),
                 columns: ($($col_type),* ,),) -> Self {
                 Self {
-                    rows,
+                    rows: keypad_struct!(@refcell_tuple  rows,  ($($row_type),*)),
                     columns:  keypad_struct!(@refcell_tuple  columns,  ($($col_type),*)),
                 }
             }
@@ -399,13 +404,13 @@ macro_rules! keypad_struct {
             {
 
                 let rows: [
-                    &dyn $crate::embedded_hal::digital::v2::InputPin<Error = $error_type>;
+                    &$crate::_core::cell::RefCell<dyn $crate::embedded_hal::digital::InputPin<Error = $error_type>>;
                     keypad_struct!(@count $($row_type)*)
                 ]
                     = keypad_struct!(@tuple  self.rows,  ($($row_type),*));
 
                 let columns: [
-                    &$crate::_core::cell::RefCell<dyn $crate::embedded_hal::digital::v2::OutputPin<Error = $error_type>>;
+                    &$crate::_core::cell::RefCell<dyn $crate::embedded_hal::digital::OutputPin<Error = $error_type>>;
                     keypad_struct!(@count $($col_type)*)
                 ]
                     = keypad_struct!(@tuple  self.columns,  ($($col_type),*));
@@ -414,7 +419,7 @@ macro_rules! keypad_struct {
                 let mut out: keypad_struct!(
                     @array2d_type
                         $crate::_core::mem::MaybeUninit<$crate::KeypadInput<'a, $error_type>>,
-                        ($($row_type),*)
+                        ($($crate::_core::cell::RefCell<$row_type>),*)
                         ($($crate::_core::cell::RefCell<$col_type>),*)
                 ) = unsafe {
                     $crate::_core::mem::MaybeUninit::uninit().assume_init()
@@ -437,7 +442,7 @@ macro_rules! keypad_struct {
             /// call `.release()`, or it will fail to compile.
             #[allow(dead_code)]
             $visibility fn release(self) ->(($($row_type),* ,), ($($col_type),* ,)) {
-                (self.rows, keypad_struct!(@de_refcell_tuple  self.columns,  ($($col_type),*)))
+                (keypad_struct!(@de_refcell_tuple  self.rows,  ($($row_type),*)), keypad_struct!(@de_refcell_tuple  self.columns,  ($($col_type),*)))
             }
         }
     };
